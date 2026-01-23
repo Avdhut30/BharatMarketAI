@@ -1,0 +1,14 @@
+pandas
+numpy
+yfinance
+scikit-learn
+lightgbm
+ta
+matplotlib
+streamlit
+joblib
+tqdm
+python-dotenv
+
+feedparser
+vaderSentiment
