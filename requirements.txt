@@ -1,14 +1,18 @@
-pandas
-numpy
+
 yfinance
 scikit-learn
 lightgbm
 ta
-matplotlib
-streamlit
-joblib
-tqdm
-python-dotenv
 
 feedparser
 vaderSentiment
+streamlit==1.41.1
+altair==5.5.0
+pandas==2.2.3
+numpy==2.1.3
+pyarrow==17.0.0
+requests==2.32.3
+matplotlib==3.9.2
+python-dateutil==2.9.0.post0
+python-dotenv==1.0.1
+tqdm==4.67.1
