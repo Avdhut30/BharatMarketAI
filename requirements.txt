@@ -2,15 +2,16 @@ streamlit==1.32.2
 altair==5.2.0
 
 pandas==2.2.3
-numpy==1.26.4
+numpy<2.0.0,>=1.24.0
+ta==0.11.0
 
 matplotlib==3.8.4
 requests==2.32.3
 python-dotenv==1.0.1
 
 yfinance==0.2.36
-joblib==1.4.2
-scikit-learn==1.4.2
+joblib==1.5.2
+scikit-learn==1.5.2
 
 reportlab==4.2.2
 
