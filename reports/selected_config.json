@@ -1,8 +1,8 @@
 {
-  "threshold": 0.52,
-  "top_k": 3,
+  "threshold": 0.5,
+  "top_k": 5,
   "round_trip_cost": 0.0005,
-  "exit_threshold": 0.48,
+  "exit_threshold": 0.52,
   "trend_filter": true,
   "horizon_days": 5,
   "atr_stop_mult": 1.5
