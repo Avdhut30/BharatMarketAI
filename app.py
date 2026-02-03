@@ -357,7 +357,7 @@ if page == "🏠 Overview":
         # ✅ Date shown vertically in a table too
         st.caption("Latest equity curve points (Date shown vertically)")
         eq_table = df_date_vertical(chart_df, date_col_name="Date").tail(30)
-        st.dataframe(eq_table, width="stretch")
+        st.dataframe(eq_table, use_container_width=True)
 
     st.divider()
     st.subheader("Monthly Returns Heatmap (Top-K No-lookahead)")
@@ -369,7 +369,7 @@ if page == "🏠 Overview":
         if heat.empty:
             st.info("Not enough data to build monthly table.")
         else:
-            st.dataframe(style_heatmap(heat), width="stretch")
+            st.dataframe(style_heatmap(heat), use_container_width=True)
 
     st.divider()
     st.subheader("Symbol Contribution (requires trade log)")
@@ -405,14 +405,14 @@ if page == "🏠 Overview":
             colA, colB = st.columns(2)
             with colA:
                 st.write("🏆 Top 15 symbols by Total PnL")
-                st.dataframe(contrib.head(15), width="stretch")
+                st.dataframe(contrib.head(15), use_container_width=True)
             with colB:
                 st.write("💥 Bottom 15 symbols by Total PnL")
-                st.dataframe(contrib.tail(15).sort_values("TotalPnL"), width="stretch")
+                st.dataframe(contrib.tail(15).sort_values("TotalPnL"), use_container_width=True)
 
             st.write("📌 Top 15 symbols by Avg PnL (min 5 trades)")
             contrib2 = contrib[contrib["Trades"] >= 5].sort_values("AvgPnL", ascending=False)
-            st.dataframe(contrib2.head(15), width="stretch")
+            st.dataframe(contrib2.head(15), use_container_width=True)
 
     st.divider()
     st.subheader("Accuracy & Trust checks (quick)")
@@ -436,7 +436,7 @@ if page == "🏠 Overview":
                 oos_view["Date"] = pd.to_datetime(oos_view["Date"], errors="coerce")
                 oos_view = oos_view.dropna(subset=["Date"]).sort_values("Date")
                 st.caption("Latest rows (Date shown vertically)")
-                st.dataframe(oos_view.tail(30), width="stretch")
+                st.dataframe(oos_view.tail(30), use_container_width=True)
     else:
         st.info("No OOS predictions found. Run: `python -m src.models.walk_forward`")
 
@@ -472,7 +472,7 @@ elif page == "🎯 Signals":
         out = df[df["p_up"] >= p_cut].copy() if "p_up" in df.columns else df.copy()
         out = out.sort_values(sort_by, ascending=False)
 
-        st.dataframe(out, width="stretch", height=560)
+        st.dataframe(out, use_container_width=True, height=560)
         st.download_button(
             "⬇️ Download filtered signals",
             data=out.to_csv(index=False).encode("utf-8"),
@@ -525,12 +525,12 @@ elif page == "🧪 Backtest Lab":
     if exists(threshold_grid_nl_path):
         with st.expander("Threshold grid (No-lookahead) — top by Sharpe", expanded=False):
             grid = read_csv(threshold_grid_nl_path)
-            st.dataframe(grid.sort_values("Sharpe", ascending=False).head(15), width="stretch")
+            st.dataframe(grid.sort_values("Sharpe", ascending=False).head(15), use_container_width=True)
 
     if exists(robustness_grid_path):
         with st.expander("Robustness grid — top configs", expanded=False):
             rb = read_csv(robustness_grid_path)
-            st.dataframe(rb.head(20), width="stretch")
+            st.dataframe(rb.head(20), use_container_width=True)
 
     st.divider()
 
@@ -573,7 +573,7 @@ elif page == "🧪 Backtest Lab":
 
         # ✅ Date shown vertically in table
         st.caption("Latest equity curve points (Date shown vertically)")
-        st.dataframe(df_date_vertical(equity_df).tail(30), width="stretch")
+        st.dataframe(df_date_vertical(equity_df).tail(30), use_container_width=True)
 
         st.download_button(
             "⬇️ Download equity curve",
@@ -628,7 +628,7 @@ elif page == "🧠 Advisor":
 
             tech_cols = [c for c in ["Close", "sma_20", "sma_50", "sma_200", "rsi_14", "atr_pct", "vol_z_20"] if c in last_1m.columns]
             st.write("Technical indicators (last 1 month) — Date shown vertically")
-            st.dataframe(df_date_vertical(last_1m[tech_cols].tail(22)), width="stretch")
+            st.dataframe(df_date_vertical(last_1m[tech_cols].tail(22)), use_container_width=True)
 
             st.divider()
 
@@ -641,10 +641,10 @@ elif page == "🧠 Advisor":
                 st.write("Latest day news signals")
                 latest_news = pd.DataFrame([latest[news_cols]]).copy()
                 latest_news.index = ["Latest Day"]
-                st.dataframe(latest_news.T.rename(columns={"Latest Day": "Value"}), width="stretch")
+                st.dataframe(latest_news.T.rename(columns={"Latest Day": "Value"}), use_container_width=True)
 
                 st.write("Recent news context (last 30 rows) — Date shown vertically")
-                st.dataframe(df_date_vertical(feat[news_cols].tail(30)), width="stretch")
+                st.dataframe(df_date_vertical(feat[news_cols].tail(30)), use_container_width=True)
 
         except Exception as e:
             st.error(f"Failed to analyze {symbol}: {e}")
@@ -667,7 +667,7 @@ elif page == "📰 News":
                 st.line_chart(daily.set_index("Date")[chart_cols])
 
             # ✅ date vertical
-            st.dataframe(daily.tail(60), width="stretch", height=460)
+            st.dataframe(daily.tail(60), use_container_width=True, height=460)
         else:
             st.warning("Missing `news_daily.csv`. Run:\n`python -m src.data.news`\n`python -m src.features.news_features`")
 
@@ -678,7 +678,7 @@ elif page == "📰 News":
             if "DateTime" in raw.columns:
                 raw["DateTime"] = pd.to_datetime(raw["DateTime"], errors="coerce")
                 raw = raw.dropna(subset=["DateTime"]).sort_values("DateTime")
-            st.dataframe(raw.tail(80), width="stretch", height=640)
+            st.dataframe(raw.tail(80), use_container_width=True, height=640)
         else:
             st.info("Missing `news_raw.csv`. Run: `python -m src.data.news`")
 
@@ -689,7 +689,7 @@ elif page == "📁 Files":
     st.write("Reports folder:")
     reports_files = sorted(glob.glob(os.path.join(REPORTS_DIR, "*")))
     if reports_files:
-        st.dataframe(pd.DataFrame({"reports": [os.path.basename(p) for p in reports_files]}), width="stretch")
+        st.dataframe(pd.DataFrame({"reports": [os.path.basename(p) for p in reports_files]}), use_container_width=True)
     else:
         st.info("No files in `reports/` yet.")
 
@@ -698,7 +698,7 @@ elif page == "📁 Files":
     st.write("Data cache folder:")
     data_files = sorted(glob.glob(os.path.join(DATA_DIR, "*")))
     if data_files:
-        st.dataframe(pd.DataFrame({"data_cache": [os.path.basename(p) for p in data_files]}), width="stretch")
+        st.dataframe(pd.DataFrame({"data_cache": [os.path.basename(p) for p in data_files]}), use_container_width=True)
     else:
         st.info("No files in `data_cache/` yet.")
 

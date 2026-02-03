@@ -235,7 +235,7 @@ def mf_dashboard():
 
     edited = st.data_editor(
         tag_df,
-        width="stretch",
+        use_container_width=True,
         num_rows="fixed",
         column_config={
             "asset_class": st.column_config.SelectboxColumn("asset_class", options=ASSET_CLASSES),
@@ -301,7 +301,7 @@ def mf_dashboard():
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
 
-    st.dataframe(out[show_cols].sort_values("current_value", ascending=False), width="stretch")
+    st.dataframe(out[show_cols].sort_values("current_value", ascending=False), use_container_width=True,height=650)
 
     st.download_button(
         "⬇️ Download scheme summary",
@@ -322,7 +322,7 @@ def mf_dashboard():
     with left:
         st.write("Allocation by Asset Class")
         alloc_asset = allocation_table(summary, "asset_class")
-        st.dataframe(alloc_asset, width="stretch")
+        st.dataframe(alloc_asset, use_container_width=True,height=650)
 
         if not alloc_asset.empty and "weight" in alloc_asset.columns:
             fig, ax = plt.subplots()
@@ -337,7 +337,7 @@ def mf_dashboard():
     with right:
         st.write("Allocation by Goal")
         alloc_goal = allocation_table(summary, "goal")
-        st.dataframe(alloc_goal, width="stretch")
+        st.dataframe(alloc_goal, use_container_width=True,height=650)
 
         if not alloc_goal.empty and "weight" in alloc_goal.columns:
             fig, ax = plt.subplots()
@@ -380,7 +380,7 @@ def mf_dashboard():
         drift = compute_drift(alloc_asset, target, col_name="asset_class")
 
         st.write("Allocation drift (current vs target)")
-        st.dataframe(drift, width="stretch")
+        st.dataframe(drift, use_container_width=True,height=650) 
 
         add_next = suggestion_add_next(drift)
         if add_next:
@@ -406,7 +406,7 @@ def mf_dashboard():
                     if ru is None or (isinstance(ru, pd.DataFrame) and ru.empty):
                         st.info("No realized/unrealized rows computed.")
                     else:
-                        st.dataframe(ru, width="stretch")
+                        st.dataframe(ru, use_container_width=True,height=650)
 
                         # Try common totals if present
                         if isinstance(ru, pd.DataFrame):
@@ -431,11 +431,11 @@ def mf_dashboard():
         else:
             sip_df = sip_health(sip_df)
             st.write("Detected SIPs")
-            st.dataframe(sip_df, width="stretch")
+            st.dataframe(sip_df, use_container_width=True,height=650)
 
             st.subheader("🗓️ SIP Calendar")
             cal = sip_calendar(txn_df)
-            st.dataframe(cal, width="stretch")
+            st.dataframe(cal, use_container_width=True,height=650)
 
             cal2 = cal.copy()
             cal2["ym"] = cal2["year"].astype(str) + "-" + cal2["month"].astype(str).str.zfill(2)
