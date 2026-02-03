@@ -1,6 +1,7 @@
 # app.py
 # Professional + accuracy-focused dashboard + Monthly Heatmap + Symbol Contribution
 # + Advisor + News features shown inside Advisor (if news_daily.csv exists)
+# + Mutual Funds (MF Central-style dashboard)
 
 import os
 import re
@@ -12,13 +13,12 @@ import streamlit as st
 from src.backtest.strategy import StrategyConfig
 from src.backtest.metrics import summary_stats
 
-# IMPORTANT: this module must exist in your project.
-# It should provide:
-#   - load_oos()
-#   - backtest_topk_nolookahead(oos_df, cfg, top_k=3) -> (equity_df, stats)
+# Must exist in your project
 from src.backtest.oos_backtest_topk_nolookahead import load_oos, backtest_topk_nolookahead
-
 from src.ui.advisor import score_single_symbol
+
+# Mutual Funds Dashboard
+from src.mf.ui.mf_pages import mf_dashboard
 
 REPORTS_DIR = "reports"
 DATA_DIR = "data_cache"
@@ -51,7 +51,7 @@ def exists(p):
 
 
 def fmt_pct(x):
-    return f"{x*100:.2f}%"
+    return f"{x * 100:.2f}%"
 
 
 def fmt_num(x):
@@ -76,11 +76,24 @@ def kpi_card(label: str, value: str, help_text: str = ""):
     )
 
 
+def df_date_vertical(df: pd.DataFrame, date_col_name="Date") -> pd.DataFrame:
+    """
+    Ensures Date is shown as a vertical column (not as index).
+    If df has DatetimeIndex -> reset to Date column.
+    """
+    out = df.copy()
+    if isinstance(out.index, pd.DatetimeIndex):
+        out = out.reset_index().rename(columns={"index": date_col_name})
+    if date_col_name in out.columns:
+        out[date_col_name] = pd.to_datetime(out[date_col_name], errors="coerce")
+        out = out.dropna(subset=[date_col_name])
+    return out
+
+
 def load_selected_threshold(default=0.52):
     """
     Loads threshold from reports/selected_threshold.txt safely.
-    Avoids picking up drawdown (-0.2) as threshold.
-    Always clamps into [0.50, 0.95] so Streamlit widgets never crash.
+    Always clamps into [0.50, 0.95]
     """
     path = os.path.join(REPORTS_DIR, "selected_threshold.txt")
     val = default
@@ -88,20 +101,15 @@ def load_selected_threshold(default=0.52):
     if os.path.exists(path):
         try:
             txt = open(path, "r", encoding="utf-8").read()
-
-            # Prefer explicit threshold line
             m = re.search(r"threshold\s+([0]\.\d+)", txt, flags=re.IGNORECASE)
             if not m:
-                # fallback: any 0.xx float
                 m = re.search(r"\b([0]\.\d+)\b", txt)
-
             if m:
                 val = float(m.group(1))
         except Exception:
             val = default
 
-    val = float(val)
-    val = max(0.50, min(0.95, val))
+    val = max(0.50, min(0.95, float(val)))
     return val
 
 
@@ -115,7 +123,6 @@ def load_selected_config():
     try:
         with open(SELECTED_CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-        # basic sanity
         if "threshold" not in cfg:
             return None
         return cfg
@@ -137,7 +144,6 @@ def default_lab_params(default_threshold: float):
             "trend_filter": True,
         }
 
-    # clamp + safe conversions
     th = float(cfg.get("threshold", default_threshold))
     th = max(0.50, min(0.95, th))
 
@@ -164,9 +170,6 @@ def default_lab_params(default_threshold: float):
 
 
 def infer_mean_wf_auc(oos_df: pd.DataFrame):
-    """
-    If walk-forward window fields exist, compute AUC per test window (if target column exists).
-    """
     cols = set(oos_df.columns)
     if not {"wf_train_start", "wf_train_end", "wf_test_end"}.issubset(cols):
         return None
@@ -178,13 +181,11 @@ def infer_mean_wf_auc(oos_df: pd.DataFrame):
     ycol = target_cols[0]
     try:
         from sklearn.metrics import roc_auc_score
-
         aucs = []
         for _, g in oos_df.groupby(["wf_train_start", "wf_train_end", "wf_test_end"]):
             if g[ycol].nunique() < 2:
                 continue
             aucs.append(roc_auc_score(g[ycol].astype(int), g["p_up_oos"].astype(float)))
-
         if aucs:
             return float(sum(aucs) / len(aucs))
     except Exception:
@@ -194,13 +195,6 @@ def infer_mean_wf_auc(oos_df: pd.DataFrame):
 
 
 def load_trade_log():
-    """
-    Try to load a trade log file if present.
-    Priority:
-      1) trades_topk_nolookahead.csv
-      2) trades_oos_nolookahead.csv
-      3) trades_oos.csv
-    """
     p0 = os.path.join(REPORTS_DIR, "trades_topk_nolookahead.csv")
     p1 = os.path.join(REPORTS_DIR, "trades_oos_nolookahead.csv")
     p2 = os.path.join(REPORTS_DIR, "trades_oos.csv")
@@ -222,14 +216,9 @@ def load_trade_log():
 
 
 def monthly_returns_table(equity_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build a YYYY x Month table of monthly returns from equity curve.
-    Uses Month End frequency "ME" (new pandas).
-    """
     eq = equity_df.copy().sort_index()
     eq["ret"] = eq["Equity"].pct_change().fillna(0.0)
 
-    # 'M' deprecated -> use 'ME'
     monthly = (1.0 + eq["ret"]).resample("ME").prod() - 1.0
     if monthly.empty:
         return pd.DataFrame()
@@ -239,11 +228,8 @@ def monthly_returns_table(equity_df: pd.DataFrame) -> pd.DataFrame:
     mdf["Month"] = mdf.index.month
 
     pivot = mdf.pivot_table(index="Year", columns="Month", values="mret", aggfunc="first").sort_index()
-
-    # YTD
     pivot["YTD"] = pivot.apply(lambda r: (1.0 + r.dropna()).prod() - 1.0, axis=1)
 
-    # Month labels
     month_names = {
         1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
         7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
@@ -260,9 +246,6 @@ def monthly_returns_table(equity_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def style_heatmap(df: pd.DataFrame):
-    """
-    Heatmap-like styling (no external libs). Uses Styler.map() (applymap deprecated).
-    """
     def fmt(x):
         if pd.isna(x):
             return ""
@@ -281,9 +264,6 @@ def style_heatmap(df: pd.DataFrame):
 
 
 def pick_news_cols(df: pd.DataFrame):
-    """
-    Detect likely news feature columns in merged dataframe.
-    """
     candidates = [
         "news_count",
         "sent_compound_mean", "sent_compound_std", "sent_compound_min", "sent_compound_max",
@@ -293,7 +273,7 @@ def pick_news_cols(df: pd.DataFrame):
 
 
 # ----------------------------
-# Page config + styling
+# Page config + styling (ONLY ONCE)
 # ----------------------------
 st.set_page_config(page_title="BharatMarketAI", layout="wide")
 
@@ -317,7 +297,7 @@ st.caption("Walk-forward OOS + no-lookahead backtesting dashboard (research-only
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Go to",
-    ["🏠 Overview", "🎯 Signals", "🧪 Backtest Lab", "🧠 Advisor", "📰 News", "📁 Files"],
+    ["🏠 Overview", "🎯 Signals", "🧪 Backtest Lab", "🧠 Advisor", "📰 News", "📁 Files", "📈 Mutual Funds"],
     index=0,
 )
 
@@ -355,7 +335,7 @@ if page == "🏠 Overview":
         with c4:
             kpi_card("Total Return", fmt_pct(stats["TotalReturn"]), f"Over {stats['Days']} days")
     else:
-        st.info("No `equity_curve_oos_topk_nolookahead.csv` found yet. Run the backtest module to generate it.")
+        st.info("No `equity_curve_oos_topk_nolookahead.csv` found yet. Generate backtests first.")
 
     st.divider()
 
@@ -373,6 +353,11 @@ if page == "🏠 Overview":
         st.warning("No equity curves found in reports. Generate backtests first.")
     else:
         st.line_chart(chart_df)
+
+        # ✅ Date shown vertically in a table too
+        st.caption("Latest equity curve points (Date shown vertically)")
+        eq_table = df_date_vertical(chart_df, date_col_name="Date").tail(30)
+        st.dataframe(eq_table, width="stretch")
 
     st.divider()
     st.subheader("Monthly Returns Heatmap (Top-K No-lookahead)")
@@ -444,6 +429,14 @@ if page == "🏠 Overview":
                 st.write(f"Estimated mean WF AUC (computed from file): **{mean_auc:.3f}**")
             else:
                 st.write("WF AUC not computed here (missing window fields or sklearn).")
+
+            # ✅ Show date vertically if present
+            if "Date" in oos.columns:
+                oos_view = oos.copy()
+                oos_view["Date"] = pd.to_datetime(oos_view["Date"], errors="coerce")
+                oos_view = oos_view.dropna(subset=["Date"]).sort_values("Date")
+                st.caption("Latest rows (Date shown vertically)")
+                st.dataframe(oos_view.tail(30), width="stretch")
     else:
         st.info("No OOS predictions found. Run: `python -m src.models.walk_forward`")
 
@@ -489,7 +482,7 @@ elif page == "🎯 Signals":
 
 
 elif page == "🧪 Backtest Lab":
-    st.subheader("Backtest Lab — OOS Top-K No-Lookahead (accurate execution rules)")
+    st.subheader("Backtest Lab — OOS Top-K No-Lookahead")
 
     st.caption(
         "Signal is from day **t**; entries are filled at **next-day open (t+1)**. "
@@ -563,13 +556,6 @@ elif page == "🧪 Backtest Lab":
 
             equity_df, stats = backtest_topk_nolookahead(oos, cfg, top_k=int(top_k))
 
-        approx_signal_rate = (oos["p_up_oos"] >= threshold).mean() if "p_up_oos" in oos.columns else None
-        if approx_signal_rate is not None and approx_signal_rate < 0.02:
-            st.warning(
-                "Very few signals at this threshold → results may be unstable (overfit risk). "
-                "Try lowering threshold or increasing universe size."
-            )
-
         s = {k: (round(v, 4) if isinstance(v, float) else v) for k, v in stats.items()}
 
         k1, k2, k3, k4 = st.columns(4)
@@ -585,19 +571,16 @@ elif page == "🧪 Backtest Lab":
         st.divider()
         st.line_chart(equity_df["Equity"])
 
+        # ✅ Date shown vertically in table
+        st.caption("Latest equity curve points (Date shown vertically)")
+        st.dataframe(df_date_vertical(equity_df).tail(30), width="stretch")
+
         st.download_button(
             "⬇️ Download equity curve",
-            data=equity_df.reset_index().to_csv(index=False).encode("utf-8"),
+            data=df_date_vertical(equity_df).to_csv(index=False).encode("utf-8"),
             file_name="equity_curve_backtest_lab.csv",
             mime="text/csv",
         )
-
-        st.subheader("Monthly Returns Heatmap (this run)")
-        heat = monthly_returns_table(equity_df)
-        if not heat.empty:
-            st.dataframe(style_heatmap(heat), width="stretch")
-        else:
-            st.info("Not enough data to build monthly heatmap for this run.")
     else:
         st.info("Set parameters and click **Run Backtest** or **Run Best Config**.")
 
@@ -608,27 +591,11 @@ elif page == "🧠 Advisor":
 
     colA, colB, colC = st.columns([2, 1, 1])
     with colA:
-        symbol = st.text_input(
-            "Enter Yahoo Finance ticker",
-            value="RELIANCE.NS",
-            help="Examples: RELIANCE.NS, TCS.NS, INFY.NS, SBIN.NS",
-        )
+        symbol = st.text_input("Enter Yahoo Finance ticker", value="RELIANCE.NS")
     with colB:
-        buy_th = st.number_input(
-            "Buy threshold",
-            min_value=0.50,
-            max_value=0.95,
-            value=float(DEFAULT_THRESHOLD),
-            step=0.01,
-        )
+        buy_th = st.number_input("Buy threshold", min_value=0.50, max_value=0.95, value=float(DEFAULT_THRESHOLD), step=0.01)
     with colC:
-        sell_th = st.number_input(
-            "Sell threshold",
-            min_value=0.05,
-            max_value=0.50,
-            value=0.45,
-            step=0.01,
-        )
+        sell_th = st.number_input("Sell threshold", min_value=0.05, max_value=0.50, value=0.45, step=0.01)
 
     require_trend = st.checkbox("Require Trend_200 for BUY", value=True)
     run_one = st.button("🔍 Analyze")
@@ -659,12 +626,9 @@ elif page == "🧠 Advisor":
             st.subheader("📈 Last 1 Month Condition")
             st.line_chart(last_1m[["Close"]])
 
-            tech_cols = [
-                c for c in ["Close", "sma_20", "sma_50", "sma_200", "rsi_14", "atr_pct", "vol_z_20"]
-                if c in last_1m.columns
-            ]
-            st.write("Technical indicators (last 1 month)")
-            st.dataframe(last_1m[tech_cols].tail(22), width="stretch")
+            tech_cols = [c for c in ["Close", "sma_20", "sma_50", "sma_200", "rsi_14", "atr_pct", "vol_z_20"] if c in last_1m.columns]
+            st.write("Technical indicators (last 1 month) — Date shown vertically")
+            st.dataframe(df_date_vertical(last_1m[tech_cols].tail(22)), width="stretch")
 
             st.divider()
 
@@ -679,21 +643,11 @@ elif page == "🧠 Advisor":
                 latest_news.index = ["Latest Day"]
                 st.dataframe(latest_news.T.rename(columns={"Latest Day": "Value"}), width="stretch")
 
-                st.write("Recent news context (last 30 rows)")
-                st.dataframe(feat[news_cols].tail(30), width="stretch")
-
-            st.divider()
-
-            st.download_button(
-                "⬇️ Download last 1 month features (tech + news)",
-                data=last_1m.reset_index().to_csv(index=False).encode("utf-8"),
-                file_name=f"{symbol}_last_1m_features_with_news.csv",
-                mime="text/csv",
-            )
+                st.write("Recent news context (last 30 rows) — Date shown vertically")
+                st.dataframe(df_date_vertical(feat[news_cols].tail(30)), width="stretch")
 
         except Exception as e:
             st.error(f"Failed to analyze {symbol}: {e}")
-            st.info("Tip: Make sure the ticker exists on Yahoo Finance (e.g., RELIANCE.NS).")
 
 
 elif page == "📰 News":
@@ -708,14 +662,11 @@ elif page == "📰 News":
             daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce")
             daily = daily.dropna(subset=["Date"]).sort_values("Date")
 
-            chart_cols = [
-                c for c in ["news_count", "sent_compound_mean", "geo_risk_sum",
-                            "oil_energy_sum", "rates_inflation_sum", "india_sum"]
-                if c in daily.columns
-            ]
+            chart_cols = [c for c in ["news_count", "sent_compound_mean", "geo_risk_sum", "oil_energy_sum", "rates_inflation_sum", "india_sum"] if c in daily.columns]
             if chart_cols:
                 st.line_chart(daily.set_index("Date")[chart_cols])
 
+            # ✅ date vertical
             st.dataframe(daily.tail(60), width="stretch", height=460)
         else:
             st.warning("Missing `news_daily.csv`. Run:\n`python -m src.data.news`\n`python -m src.features.news_features`")
@@ -768,3 +719,7 @@ elif page == "📁 Files":
         ),
         language="bash",
     )
+
+
+elif page == "📈 Mutual Funds":
+    mf_dashboard()
