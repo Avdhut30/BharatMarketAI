@@ -208,77 +208,94 @@ def load_model_bundle():
 
 def download_history(symbol: str, years: int = 3) -> pd.DataFrame:
     """
-    Download enough history to compute SMA200 etc.
-    Adds: disk cache + retries for Streamlit Cloud / Yahoo blocking.
+    Streamlit-Cloud hardened Yahoo Finance fetch:
+    - shared session with browser User-Agent
+    - retries + exponential backoff
+    - fallback method: Ticker().history()
+    - optional fallback: .NS -> .BO
     """
-    _ensure_dirs()
+    import time
+    import random
+    import requests
 
-    cache_file = _cache_path(symbol, years)
+    # 1) Create a "browser-like" session (this helps on cloud)
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    })
 
-    # 1) Use fresh cache immediately
-    if _is_cache_fresh(cache_file):
-        cached = _load_cache(cache_file)
-        if cached is not None and not cached.empty:
-            cached.index = pd.to_datetime(cached.index, errors="coerce")
-            cached = cached.dropna(axis=0, how="any")
-            cached.index.name = "Date"
-            cached = _clean_ohlcv(cached)
-            return cached
-
-    last_err = None
-
-    # 2) Retry yfinance a few times
-    for attempt in range(1, YF_MAX_RETRIES + 1):
+    def _try(sym: str) -> pd.DataFrame:
+        # A) Try yf.download
         try:
             df = yf.download(
-                symbol,
+                sym,
                 period=f"{years}y",
                 auto_adjust=True,
                 progress=False,
                 group_by="column",
                 threads=False,
+                session=session,
             )
-
-            if df is None or df.empty:
-                raise ValueError("Empty response from Yahoo/yfinance")
-
-            df = _flatten_yf_columns(df, symbol)
-
-            if not isinstance(df.index, pd.DatetimeIndex):
-                df = df.reset_index()
-                date_col = "Date" if "Date" in df.columns else df.columns[0]
-                df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-                df = df.dropna(subset=[date_col]).set_index(date_col)
-
-            df.index.name = "Date"
-            df = _clean_ohlcv(df)
-
-            # save cache
-            _save_cache(df, cache_file)
-
-            return df
-
-        except Exception as e:
-            last_err = e
-            # exponential backoff: 1s, 2s, 4s
-            time.sleep(2 ** (attempt - 1))
-
-    # 3) If yfinance failed, try using stale cache (better than nothing)
-    cached = _load_cache(cache_file)
-    if cached is not None and not cached.empty:
-        try:
-            cached.index = pd.to_datetime(cached.index, errors="coerce")
-            cached = cached.dropna(axis=0, how="any")
-            cached.index.name = "Date"
-            cached = _clean_ohlcv(cached)
-            return cached
+            if df is not None and not df.empty:
+                return df
         except Exception:
             pass
 
-    raise ValueError(
-        f"Failed to fetch data for {symbol} from Yahoo/yfinance after {YF_MAX_RETRIES} attempts. "
-        f"Reason: {repr(last_err)}"
-    )
+        # B) Fallback: Ticker().history
+        try:
+            t = yf.Ticker(sym, session=session)
+            df = t.history(period=f"{years}y", auto_adjust=True)
+            if df is not None and not df.empty:
+                return df
+        except Exception:
+            pass
+
+        return pd.DataFrame()
+
+    # 2) Retry loop (important for Streamlit Cloud)
+    df = pd.DataFrame()
+    for attempt in range(5):
+        df = _try(symbol)
+        if df is not None and not df.empty:
+            break
+        # exponential backoff + jitter
+        time.sleep((2 ** attempt) * 0.6 + random.random() * 0.4)
+
+    # 3) Optional fallback: NSE -> BSE suffix
+    if (df is None) or df.empty:
+        if symbol.endswith(".NS"):
+            alt = symbol.replace(".NS", ".BO")
+            for attempt in range(3):
+                df = _try(alt)
+                if df is not None and not df.empty:
+                    symbol = alt
+                    break
+                time.sleep((2 ** attempt) * 0.6 + random.random() * 0.4)
+
+    if df is None or df.empty:
+        raise ValueError(
+            f"Failed to fetch data for {symbol} from Yahoo Finance (blocked/rate-limited on Streamlit Cloud). "
+            f"Try again in 1–2 minutes or use fallback provider."
+        )
+
+    df = _flatten_yf_columns(df, symbol)
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df = df.reset_index()
+        date_col = "Date" if "Date" in df.columns else df.columns[0]
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col]).set_index(date_col)
+
+    df.index.name = "Date"
+    df = _clean_ohlcv(df)
+    return df
+
 
 
 # ----------------------------
