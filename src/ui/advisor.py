@@ -230,6 +230,30 @@ def download_history(symbol: str, years: int = 3) -> pd.DataFrame:
         "Connection": "keep-alive",
     })
 
+    def download_history(symbol: str, years: int = 3) -> pd.DataFrame:
+        """
+        Streamlit-Cloud hardened Yahoo Finance fetch:
+        - shared session with browser User-Agent
+        - retries + exponential backoff
+        - fallback method: Ticker().history()
+        - optional fallback: .NS -> .BO
+        """
+    import time
+    import random
+    import requests
+
+    # 1) Create a "browser-like" session (this helps on cloud)
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+    })
+
     def _try(sym: str) -> pd.DataFrame:
         # A) Try yf.download
         try:
