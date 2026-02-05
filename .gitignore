@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+data_cache/*parquet
+data_cache/*csv
+data_cache/*json
+
 
 # Virtual env
 venv/
@@ -18,3 +22,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+
+# --- Secrets ---
+.env
+*.env

@@ -23,8 +23,9 @@ SELECTED_CONFIG_PATH = os.path.join(REPORTS_DIR, "selected_config.json")
 NUMERIC_COLS = ["Open", "High", "Low", "Close", "Volume"]
 
 # Cache config (helps on Streamlit Cloud where Yahoo blocks often)
-CACHE_TTL_HOURS = 6  # use cached price data for 6 hours
-YF_MAX_RETRIES = 3
+CACHE_TTL_HOURS = 6   # cache price data for 6 hours
+YF_MAX_RETRIES = 5    # retries for the main symbol
+YF_ALT_RETRIES = 3    # retries for .BO fallback
 
 
 # ----------------------------
@@ -60,6 +61,7 @@ def _flatten_yf_columns(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         if symbol in df.columns.get_level_values(-1):
             df = df.xs(symbol, axis=1, level=-1)
         else:
+            # fallback: take first ticker
             df = df.xs(df.columns.get_level_values(-1)[0], axis=1, level=-1)
 
     df.columns = [str(c).strip() for c in df.columns]
@@ -110,7 +112,7 @@ def _save_cache(df: pd.DataFrame, path: str):
     try:
         df.to_parquet(path)
     except Exception:
-        # fallback to csv if parquet fails
+        # parquet may fail if pyarrow missing; fallback to csv
         try:
             df.to_csv(path.replace(".parquet", ".csv"))
         except Exception:
@@ -206,56 +208,98 @@ def load_model_bundle():
     return bundle, None, {"model": bundle}
 
 
+# ----------------------------
+# Price history download (Cloud-safe + cached)
+# ----------------------------
+def _alpha_vantage_daily_adjusted(symbol: str) -> pd.DataFrame:
+    """
+    Fallback provider when Yahoo blocks Streamlit Cloud.
+    Uses Alpha Vantage TIME_SERIES_DAILY_ADJUSTED.
+    """
+    import requests
+
+    key = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
+    if not key:
+        return pd.DataFrame()
+
+    # AlphaVantage expects symbol WITHOUT .NS suffix sometimes.
+    # For NSE you can try "RELIANCE.BSE" etc, but many work as-is with .NS removed.
+    av_symbol = symbol.replace(".NS", "").replace(".BO", "")
+
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "TIME_SERIES_DAILY_ADJUSTED",
+        "symbol": av_symbol,
+        "outputsize": "full",
+        "apikey": key,
+    }
+
+    r = requests.get(url, params=params, timeout=20)
+    if r.status_code != 200:
+        return pd.DataFrame()
+
+    data = r.json()
+    ts = data.get("Time Series (Daily)")
+    if not ts:
+        return pd.DataFrame()
+
+    df = pd.DataFrame.from_dict(ts, orient="index")
+    df.index = pd.to_datetime(df.index, errors="coerce")
+    df = df.dropna().sort_index()
+
+    # Map to OHLCV
+    df = df.rename(
+        columns={
+            "1. open": "Open",
+            "2. high": "High",
+            "3. low": "Low",
+            "4. close": "Close",
+            "6. volume": "Volume",
+        }
+    )
+
+    keep = ["Open", "High", "Low", "Close", "Volume"]
+    df = df[keep].copy()
+
+    for c in keep:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    df["Volume"] = df["Volume"].fillna(0)
+    df.index.name = "Date"
+    return df
+
+
 def download_history(symbol: str, years: int = 3) -> pd.DataFrame:
     """
-    Streamlit-Cloud hardened Yahoo Finance fetch:
-    - shared session with browser User-Agent
-    - retries + exponential backoff
-    - fallback method: Ticker().history()
-    - optional fallback: .NS -> .BO
+    1) Try Yahoo (yfinance) with retries
+    2) If Yahoo blocked -> fallback to AlphaVantage
+    3) Cache results to avoid repeated hits
     """
-    import time
+    _ensure_dirs()
+
+    cache_path = _cache_path(symbol, years)
+
+    # 0) Use cache if fresh
+    if _is_cache_fresh(cache_path):
+        cached = _load_cache(cache_path)
+        if cached is not None and not cached.empty:
+            cached.index = pd.to_datetime(cached.index, errors="coerce")
+            cached.index.name = "Date"
+            return _clean_ohlcv(cached)
+
     import random
     import requests
 
-    # 1) Create a "browser-like" session (this helps on cloud)
     session = requests.Session()
     session.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
+        )
     })
 
-    def download_history(symbol: str, years: int = 3) -> pd.DataFrame:
-        """
-        Streamlit-Cloud hardened Yahoo Finance fetch:
-        - shared session with browser User-Agent
-        - retries + exponential backoff
-        - fallback method: Ticker().history()
-        - optional fallback: .NS -> .BO
-        """
-    import time
-    import random
-    import requests
-
-    # 1) Create a "browser-like" session (this helps on cloud)
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-    })
-
-    def _try(sym: str) -> pd.DataFrame:
-        # A) Try yf.download
+    def _try_yahoo(sym: str) -> pd.DataFrame:
         try:
             df = yf.download(
                 sym,
@@ -271,7 +315,6 @@ def download_history(symbol: str, years: int = 3) -> pd.DataFrame:
         except Exception:
             pass
 
-        # B) Fallback: Ticker().history
         try:
             t = yf.Ticker(sym, session=session)
             df = t.history(period=f"{years}y", auto_adjust=True)
@@ -282,32 +325,37 @@ def download_history(symbol: str, years: int = 3) -> pd.DataFrame:
 
         return pd.DataFrame()
 
-    # 2) Retry loop (important for Streamlit Cloud)
+    # 1) Yahoo retries
     df = pd.DataFrame()
-    for attempt in range(5):
-        df = _try(symbol)
+    for attempt in range(4):
+        df = _try_yahoo(symbol)
         if df is not None and not df.empty:
             break
-        # exponential backoff + jitter
-        time.sleep((2 ** attempt) * 0.6 + random.random() * 0.4)
+        time.sleep((2 ** attempt) * 0.7 + random.random() * 0.5)
 
-    # 3) Optional fallback: NSE -> BSE suffix
+    # NSE->BSE fallback on Yahoo
     if (df is None) or df.empty:
         if symbol.endswith(".NS"):
             alt = symbol.replace(".NS", ".BO")
-            for attempt in range(3):
-                df = _try(alt)
+            for attempt in range(2):
+                df = _try_yahoo(alt)
                 if df is not None and not df.empty:
                     symbol = alt
                     break
-                time.sleep((2 ** attempt) * 0.6 + random.random() * 0.4)
+                time.sleep((2 ** attempt) * 0.7 + random.random() * 0.5)
 
+    # 2) If Yahoo failed, use AlphaVantage fallback
     if df is None or df.empty:
-        raise ValueError(
-            f"Failed to fetch data for {symbol} from Yahoo Finance (blocked/rate-limited on Streamlit Cloud). "
-            f"Try again in 1–2 minutes or use fallback provider."
-        )
+        df2 = _alpha_vantage_daily_adjusted(symbol)
+        if df2 is None or df2.empty:
+            raise ValueError(
+                f"Failed to fetch data for {symbol} from Yahoo Finance (blocked/rate-limited on Streamlit Cloud) "
+                f"AND AlphaVantage fallback failed. Add ALPHA_VANTAGE_API_KEY in Streamlit Secrets."
+            )
+        _save_cache(df2, cache_path)
+        return df2
 
+    # 3) Normal Yahoo cleanup + cache
     df = _flatten_yf_columns(df, symbol)
 
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -318,8 +366,9 @@ def download_history(symbol: str, years: int = 3) -> pd.DataFrame:
 
     df.index.name = "Date"
     df = _clean_ohlcv(df)
-    return df
 
+    _save_cache(df, cache_path)
+    return df
 
 
 # ----------------------------
